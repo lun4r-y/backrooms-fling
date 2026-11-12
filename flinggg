@@ -1,0 +1,184 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+local Backpack = LocalPlayer:WaitForChild("Backpack")
+
+-- Configuration
+local FLING_POWER = 2000         -- Stronger fling (adjust higher if needed)
+local UPWARD_BOOST = 400         -- Extra knock-up
+local SPIN_POWER = 800            -- Spin intensity
+local DETECTION_RANGE = 60       -- Studs to detect NPCs
+local AUTO_FLING = true          -- Auto-fling when equipped
+
+-- Create the tool
+local tool = Instance.new("Tool")
+tool.Name = "FLing"
+tool.RequiresHandle = false
+tool.CanBeDropped = false
+
+local ToolEquipped = false
+local FlingConnection = nil
+
+-- NPC detection
+local function isNPC(model)
+    if not model or not model:IsA("Model") then return false end
+    if Players:GetPlayerFromCharacter(model) then return false end
+    
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+    
+    return model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso")
+end
+
+-- Find nearby NPCs
+local function findNearbyNPCs()
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return {} end
+    
+    local myRoot = character.HumanoidRootPart
+    local nearby = {}
+    
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and isNPC(obj) then
+            local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("UpperTorso") or obj:FindFirstChild("Torso")
+            if root then
+                local dist = (myRoot.Position - root.Position).Magnitude
+                if dist <= DETECTION_RANGE then
+                    table.insert(nearby, obj)
+                end
+            end
+        end
+    end
+    
+    return nearby
+end
+
+-- Prepare NPC
+local function prepareNPC(npc)
+    for _, part in pairs(npc:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Anchored = false
+            part.CanCollide = true
+        end
+    end
+end
+
+-- Fling single NPC (FIXED properties)
+local function flingNPC(npc)
+    local root = npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChild("UpperTorso") or npc:FindFirstChild("Torso")
+    local humanoid = npc:FindFirstChildOfClass("Humanoid")
+    local character = LocalPlayer.Character
+    if not root or not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local myRoot = character.HumanoidRootPart
+    
+    prepareNPC(npc)
+    
+    -- Direction away from player
+    local direction = (root.Position - myRoot.Position).Unit
+    
+    -- Disable humanoid control
+    if humanoid then
+        humanoid.PlatformStand = true
+    end
+    
+    -- Clear old constraints
+    for _, obj in pairs(root:GetChildren()) do
+        if obj:IsA("LinearVelocity") or obj:IsA("AngularVelocity") or obj:IsA("BodyMover") then
+            obj:Destroy()
+        end
+    end
+    
+    -- Create attachment (required)
+    local attachment = Instance.new("Attachment")
+    attachment.Parent = root
+    
+    -- LinearVelocity - main fling force (CORRECT: MaxForce)
+    local linearVel = Instance.new("LinearVelocity")
+    linearVel.Attachment0 = attachment
+    linearVel.MaxForce = math.huge
+    linearVel.VectorVelocity = direction * FLING_POWER + Vector3.new(0, UPWARD_BOOST, 0)
+    linearVel.Parent = root
+    
+    -- AngularVelocity - spin (CORRECT: MaxTorque & AngularVelocity)
+    local angularVel = Instance.new("AngularVelocity")
+    angularVel.Attachment0 = attachment
+    angularVel.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    angularVel.AngularVelocity = Vector3.new(
+        math.random(-SPIN_POWER, SPIN_POWER),
+        math.random(-SPIN_POWER, SPIN_POWER),
+        math.random(-SPIN_POWER, SPIN_POWER)
+    )
+    angularVel.Parent = root
+    
+    -- Cleanup after fling
+    task.delay(0.4, function()
+        if linearVel and linearVel.Parent then linearVel:Destroy() end
+        if angularVel and angularVel.Parent then angularVel:Destroy() end
+        if attachment and attachment.Parent then attachment:Destroy() end
+        if humanoid and humanoid.Parent then
+            humanoid.PlatformStand = false
+        end
+    end)
+    
+    print("EAT: Flinged " .. npc.Name .. "!")
+end
+
+-- Fling all nearby
+local function flingNearbyNPCs()
+    local npcs = findNearbyNPCs()
+    if #npcs > 0 then
+        for _, npc in ipairs(npcs) do
+            flingNPC(npc)
+        end
+        print("EAT: Flinged " .. #npcs .. " nearby NPC(s)!")
+    end
+end
+
+-- Auto-fling loop
+local function startAutoFling()
+    if FlingConnection then FlingConnection:Disconnect() end
+    
+    FlingConnection = RunService.Heartbeat:Connect(function()
+        if ToolEquipped and AUTO_FLING then
+            flingNearbyNPCs()
+        end
+    end)
+end
+
+local function stopAutoFling()
+    if FlingConnection then
+        FlingConnection:Disconnect()
+        FlingConnection = nil
+    end
+end
+
+-- Tool events
+tool.Activated:Connect(flingNearbyNPCs)
+
+tool.Equipped:Connect(function()
+    ToolEquipped = true
+    print("EAT Tool equipped! Auto-fling active (" .. DETECTION_RANGE .. " studs). Click for manual fling.")
+    startAutoFling()
+end)
+
+tool.Unequipped:Connect(function()
+    ToolEquipped = false
+    stopAutoFling()
+    print("EAT Tool unequipped.")
+end)
+
+-- Respawn/death cleanup
+if LocalPlayer.Character then
+    LocalPlayer.Character:WaitForChild("Humanoid").Died:Connect(stopAutoFling)
+end
+LocalPlayer.CharacterAdded:Connect(function(char)
+    stopAutoFling()
+    char:WaitForChild("Humanoid").Died:Connect(stopAutoFling)
+end)
+
+-- Add to backpack
+tool.Parent = Backpack
+
+print("EAT Tool fixed & loaded! Equip to start flinging NPCs.")
